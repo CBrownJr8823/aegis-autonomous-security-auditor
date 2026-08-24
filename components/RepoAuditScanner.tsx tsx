@@ -1,0 +1,115 @@
+"use client";
+
+import { FormEvent, useEffect, useRef, useState } from "react";
+import { Bot, CircleDashed, FileSearch, Github, Play, Terminal, Upload } from "lucide-react";
+
+export type Finding = {
+  id: string;
+  title: string;
+  severity: "critical" | "high" | "medium" | "low";
+  file_path: string;
+  line_number: number;
+  description: string;
+  evidence: string;
+  patch?: string;
+};
+
+export type AuditResult = {
+  job_id: string;
+  status: string;
+  risk_score: number;
+  logs: string[];
+  findings: Finding[];
+};
+
+const mockResult: AuditResult = {
+  job_id: "mock-audit-7f3d",
+  status: "completed",
+  risk_score: 68,
+  logs: [
+    "[DISCOVERY] Repository target accepted.",
+    "[DEPENDENCIES] Parsed package manifests and normalized dependency inventory.",
+    "[CVE] Identified lodash 4.17.20 with a known high-impact advisory.",
+    "[POLICY] Detected HTTP endpoint outside approved local-development scope.",
+    "[SECRETS] Potential credential-like token found and redacted from telemetry.",
+    "[REMEDIATION] Generated deterministic patch proposals.",
+    "[COMPLETE] Audit completed using resilient mock mode."
+  ],
+  findings: [
+    { id: "CVE-2021-23337", title: "Outdated lodash dependency", severity: "high", file_path: "package.json", line_number: 12, description: "lodash 4.17.20 is below the minimum safe version for a prototype-pollution advisory.", evidence: '"lodash": "4.17.20"', patch: "--- a/package.json\n+++ b/package.json\n@@\n-    \"lodash\": \"4.17.20\"\n+    \"lodash\": \"^4.17.21\"" },
+    { id: "POLICY-HTTP-001", title: "Unencrypted outbound endpoint", severity: "medium", file_path: "src/api/client.ts", line_number: 8, description: "Production network calls must use HTTPS.", evidence: 'const endpoint = "http://api.internal.example/v1";', patch: "--- a/src/api/client.ts\n+++ b/src/api/client.ts\n@@\n-const endpoint = \"http://api.internal.example/v1\";\n+const endpoint = \"https://api.internal.example/v1\";" },
+    { id: "SECRET-001", title: "Possible hard-coded credential", severity: "critical", file_path: "config.ts", line_number: 4, description: "A value matching a private-key or access-token pattern was detected. Rotate the credential and load it from a secret manager.", evidence: "const apiKey = 'REDACTED';" }
+  ]
+};
+
+type Props = { onAuditComplete: (result: AuditResult) => void; onBackendState: (online: boolean) => void };
+
+export default function RepoAuditScanner({ onAuditComplete, onBackendState }: Props) {
+  const [target, setTarget] = useState("https://github.com/vercel/next.js");
+  const [codePayload, setCodePayload] = useState("");
+  const [logs, setLogs] = useState<string[]>(["[READY] Auditor Agent standing by."]);
+  const [running, setRunning] = useState(false);
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => () => { if (timer.current) clearInterval(timer.current); }, []);
+
+  async function startAudit(event: FormEvent) {
+    event.preventDefault();
+    setRunning(true);
+    setLogs(["[QUEUED] Creating audit job..."]);
+    try {
+      const response = await fetch("/api/v1/audit-repo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repository_url: target || undefined, code_payload: codePayload || undefined })
+      });
+      if (!response.ok) throw new Error("Backend unavailable");
+      onBackendState(true);
+      const initial = await response.json();
+      let ticks = 0;
+      timer.current = setInterval(async () => {
+        ticks += 1;
+        const statusResponse = await fetch(`/api/v1/audit-status/${initial.job_id}`);
+        if (!statusResponse.ok) throw new Error("Status unavailable");
+        const result: AuditResult = await statusResponse.json();
+        setLogs(result.logs);
+        if (result.status === "completed" || result.status === "failed" || ticks > 30) {
+          if (timer.current) clearInterval(timer.current);
+          onAuditComplete(result);
+          setRunning(false);
+        }
+      }, 900);
+    } catch {
+      onBackendState(false);
+      let index = 0;
+      setLogs([]);
+      timer.current = setInterval(() => {
+        setLogs((current) => [...current, mockResult.logs[index]]);
+        index += 1;
+        if (index >= mockResult.logs.length) {
+          if (timer.current) clearInterval(timer.current);
+          onAuditComplete(mockResult);
+          setRunning(false);
+        }
+      }, 550);
+    }
+  }
+
+  return (
+    <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-5 shadow-panel">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div><h2 className="text-lg font-semibold text-white">Repository Security Command Center</h2><p className="mt-1 text-sm text-slate-400">Run a non-blocking dependency, secret, and policy audit.</p></div>
+        <div className="flex items-center gap-2 rounded-full bg-blue-400/10 px-3 py-1.5 text-xs font-medium text-blue-300"><Bot size={15} /> Auditor + Remediation Agents</div>
+      </div>
+      <form className="mt-5 space-y-3" onSubmit={startAudit}>
+        <label className="block text-sm font-medium text-slate-300">Public GitHub repository URL</label>
+        <div className="flex flex-col gap-3 sm:flex-row"><div className="flex flex-1 items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-3"><Github size={18} className="text-slate-500" /><input value={target} onChange={(e) => setTarget(e.target.value)} className="w-full bg-transparent py-3 text-sm text-white outline-none placeholder:text-slate-600" placeholder="https://github.com/owner/repository" /></div><button disabled={running} className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-400 px-5 py-3 text-sm font-bold text-slate-950 transition hover:bg-teal-300 disabled:cursor-not-allowed disabled:opacity-60"><Play size={16} fill="currentColor" />{running ? "Auditing..." : "Start Security Audit"}</button></div>
+        <details className="rounded-xl border border-slate-800 bg-slate-900/50 p-3"><summary className="cursor-pointer text-sm text-slate-400"><span className="inline-flex items-center gap-2"><Upload size={15} />Or paste code / dependency manifest</span></summary><textarea value={codePayload} onChange={(e) => setCodePayload(e.target.value)} className="mt-3 min-h-24 w-full rounded-lg border border-slate-700 bg-slate-950 p-3 font-mono text-xs text-slate-300 outline-none focus:border-teal-400" placeholder="Paste package.json, requirements.txt, or source files here..." /></details>
+      </form>
+      <div className="mt-5 overflow-hidden rounded-xl border border-slate-800 bg-[#030712]">
+        <div className="flex items-center gap-2 border-b border-slate-800 bg-slate-900/70 px-4 py-2 text-xs font-medium text-slate-400"><Terminal size={15} /> Real-time agent telemetry {running && <CircleDashed size={14} className="animate-spin text-teal-300" />}</div>
+        <div className="scrollbar-thin h-56 overflow-y-auto p-4 font-mono text-xs leading-6">{logs.map((log, i) => <p key={`${log}-${i}`} className={log.includes("COMPLETE") ? "text-emerald-300" : log.includes("CVE") || log.includes("SECRETS") ? "text-amber-300" : "text-slate-400"}>{log}</p>)}{!logs.length && <p className="text-slate-600"><FileSearch size={14} className="mr-2 inline" />Awaiting audit events.</p>}</div>
+      </div>
+    </section>
+  );
+}
